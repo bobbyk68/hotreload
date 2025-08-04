@@ -1,0 +1,9 @@
+package rules;
+import com.example.drools.model.Customer;
+
+rule "Sample DSL Rules"
+when
+    There is a Customer with age 42
+then
+    Print the customer
+end
