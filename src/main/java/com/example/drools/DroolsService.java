@@ -1,83 +1,45 @@
-// DroolsService.java
 package com.example.drools;
 
-import com.example.drools.model.Customer;
 import org.kie.api.KieServices;
-import org.kie.api.builder.KieBuilder;
-import org.kie.api.builder.KieFileSystem;
-import org.kie.api.builder.Message;
+import org.kie.api.builder.KieScanner;
+import org.kie.api.builder.KieRepository;
+import org.kie.api.builder.ReleaseId;
 import org.kie.api.runtime.KieContainer;
 import org.kie.api.runtime.KieSession;
-import org.springframework.stereotype.Service;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.List;
-import java.util.stream.Collectors;
+import org.springframework.stereotype.Service;
 
 @Service
 public class DroolsService {
-    private KieContainer kieContainer;
 
-    public DroolsService() throws Exception {
-        compileAllDslRules();
-        watchForChanges(); // Watcher thread
-    }
+    private final KieContainer kieContainer;
+    private final KieScanner kieScanner;
 
-    public void reload() {
-        try {
-            System.out.println("Reloading rules...");
-            compileAllDslRules();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void compileAllDslRules() throws Exception {
+    public DroolsService() {
         KieServices kieServices = KieServices.Factory.get();
-        KieFileSystem kfs = kieServices.newKieFileSystem();
 
-        // Load all .dsl and .dslr files
-        List<Path> ruleFiles = Files.walk(Paths.get("rules"))
-                .filter(Files::isRegularFile)
-                .filter(p -> p.toString().endsWith(".dslr") || p.toString().endsWith(".dsl"))
-                .collect(Collectors.toList());
+        // Assume your rules are under default group/artifact/version
+        ReleaseId releaseId = kieServices.newReleaseId("com.example", "drools-rules", "1.0.0");
 
-        for (Path path : ruleFiles) {
-            String content = Files.readString(path);
-            String kfsPath = "src/main/resources/" + path.getFileName();
-            kfs.write(kieServices.getResources()
-                    .newByteArrayResource(content.getBytes())
-                    .setTargetPath(kfsPath));
-        }
+        // Create KieContainer from classpath and start the scanner
+        kieContainer = kieServices.newKieContainer(releaseId);
+        kieScanner = kieServices.newKieScanner(kieContainer);
 
-        KieBuilder kieBuilder = kieServices.newKieBuilder(kfs).buildAll();
-        if (kieBuilder.getResults().hasMessages(Message.Level.ERROR)) {
-            throw new RuntimeException("Build Errors:\n" + kieBuilder.getResults());
-        }
+        // Scan every 5 seconds for updated rules (you can change this)
+        kieScanner.start(5000L);
 
-        this.kieContainer = kieServices.newKieContainer(kieServices.getRepository().getDefaultReleaseId());
+        System.out.println("KieScanner started for release: " + releaseId);
     }
 
     public void fireAllRules() {
         KieSession kieSession = kieContainer.newKieSession();
-        kieSession.insert(new Customer(42)); // Optional test insert
-        kieSession.fireAllRules();
-        kieSession.dispose();
-    }
 
-    public void execute() {
-        KieSession kieSession = kieContainer.newKieSession();
-        Customer customer = new Customer(42);
+        // Sample fact (adjust for your model)
+        com.example.drools.model.Customer customer = new com.example.drools.model.Customer();
+        customer.setAge(42);
         kieSession.insert(customer);
+
         kieSession.fireAllRules();
         kieSession.dispose();
-    }
-
-    public void watchForChanges() {
-        Thread watcher = new Thread(new WatcherService(this));
-        watcher.setDaemon(true);
-        watcher.start();
     }
 }

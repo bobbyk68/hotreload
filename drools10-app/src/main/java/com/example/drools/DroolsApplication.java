@@ -7,10 +7,8 @@ import org.kie.api.runtime.KieSession;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-
 @SpringBootApplication
 public class DroolsApplication implements CommandLineRunner {
-
     private final KieContainer kieContainer;
 
     public DroolsApplication(KieContainer kieContainer) {
@@ -23,14 +21,14 @@ public class DroolsApplication implements CommandLineRunner {
 
     @Override
     public void run(String... args) throws Exception {
-        KieSession kieSession = kieContainer.newKieSession();
+        KieSession session = kieContainer.newKieSession("ksession-rules");
+        Customer c = new Customer();
+        c.setAge(42);
+        session.insert(c);
+        session.fireAllRules();
+        session.dispose();
 
-        // Sample fact
-        Customer customer = new Customer();
-        customer.setAge(42);
-
-        kieSession.insert(customer);
-        kieSession.fireAllRules();
-        kieSession.dispose();
+        // keep alive if needed
+        Thread.currentThread().join();
     }
 }
