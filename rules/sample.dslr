@@ -6,4 +6,5 @@ when
     There is a Customer with age 42
 then
     Print the customer
+    Print the customer
 end

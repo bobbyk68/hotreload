@@ -26,6 +26,7 @@ public class WatcherService implements Runnable {
                     if (filename.endsWith(".dsl") || filename.endsWith(".dslr") || filename.endsWith(".drl")) {
                         System.out.println("Detected change in: " + filename);
                         droolsService.reload();
+                        droolsService.fireAllRules();
                     }
                 }
                 key.reset();

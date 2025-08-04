@@ -1,11 +1,8 @@
-
 package com.example.drools;
 
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import com.example.drools.model.Customer;
-import com.example.drools.DroolsService;
 
 @SpringBootApplication
 public class DroolsApplication implements CommandLineRunner {
@@ -16,12 +13,23 @@ public class DroolsApplication implements CommandLineRunner {
         this.droolsService = droolsService;
     }
 
-    public static void main(String[] args) {
-        SpringApplication.run(DroolsApplication.class, args);
+    @Override
+    public void run(String... args) {
+        // Start the file watcher
+        droolsService.watchForChanges();
+
+        // Optional: Fire rules once on startup
+        droolsService.fireAllRules();
+
+        // Block main thread to keep app running
+        try {
+            Thread.currentThread().join(); // <--- This prevents the JVM from exiting
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
-    @Override
-    public void run(String... args) throws Exception {
-        droolsService.executeRules(new Customer("Alice", "VIP", 30));
+    public static void main(String[] args) {
+        SpringApplication.run(DroolsApplication.class, args);
     }
 }
