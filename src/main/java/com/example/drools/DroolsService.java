@@ -16,68 +16,186 @@ import java.nio.file.Paths;
 import java.util.List;
 import java.util.stream.Collectors;
 
+
+import org.drools.compiler.compiler.DSLTokenizedMappingFile;
+import org.drools.compiler.lang.dsl.DefaultExpander;
+import org.kie.api.KieServices;
+import org.kie.api.builder.*;
+import org.kie.api.runtime.KieContainer;
+import org.kie.api.runtime.KieSession;
+import org.springframework.stereotype.Service;
+
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
 @Service
 public class DroolsService {
-    private KieContainer kieContainer;
+
+    // Use AtomicReference so swaps are atomic/safe during reload
+    private final AtomicReference<KieContainer> containerRef = new AtomicReference<>();
+
+    // Adjust if your rules dir differs
+    private final Path rulesDir = Paths.get("rules");
 
     public DroolsService() throws Exception {
-        compileAllDslRules();
-        watchForChanges(); // Watcher thread
+        compileAllDslRules();  // cold start = same pipeline as reload
+        watchForChanges();     // Watcher thread (unchanged if you already have one)
     }
 
+    /** External hook to trigger reloads manually. */
     public void reload() {
         try {
             System.out.println("Reloading rules...");
             compileAllDslRules();
+            System.out.println("✅ Reload complete");
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private void compileAllDslRules() throws Exception {
-        KieServices kieServices = KieServices.Factory.get();
-        KieFileSystem kfs = kieServices.newKieFileSystem();
+    /** Example: run rules with a new session. Keep your own insert logic as needed. */
+    public void fireAllRules() {
+        KieContainer kc = containerRef.get();
+        if (kc == null) throw new IllegalStateException("KieContainer not initialised");
+        KieSession ks = kc.newKieSession();
+        try {
+            // insert your domain facts here
+            // ks.insert(new Customer(42));
+            ks.fireAllRules();
+        } finally {
+            ks.dispose();
+        }
+    }
 
-        // Load all .dsl and .dslr files
-        List<Path> ruleFiles = Files.walk(Paths.get("rules"))
+    /** === The important bit: compile ALL rules from DSL/DSLR → DRL, then build === */
+    private void compileAllDslRules() throws Exception {
+        // 1) Read header (shared package/imports/globals)
+        String header = readIfExists(rulesDir.resolve("_header.drl"));
+        String pkg = (header != null) ? extractPackage(header) : "rules";
+
+        // 2) Load ALL .dsl mappings
+        List<DSLTokenizedMappingFile> mappings = Files.walk(rulesDir)
                 .filter(Files::isRegularFile)
-                .filter(p -> p.toString().endsWith(".dslr") || p.toString().endsWith(".dsl"))
+                .filter(p -> p.toString().endsWith(".dsl"))
+                .map(this::loadDslMapping)
+                .filter(Objects::nonNull)
                 .collect(Collectors.toList());
 
-        for (Path path : ruleFiles) {
-            String content = Files.readString(path);
-            String kfsPath = "src/main/resources/" + path.getFileName();
-            kfs.write(kieServices.getResources()
-                    .newByteArrayResource(content.getBytes())
-                    .setTargetPath(kfsPath));
+        // 3) Expand EVERY .dslr to DRL (prepend header so each DRL is self-contained)
+        Map<String, String> expandedDrls = new LinkedHashMap<>();
+        List<Path> dslrFiles = Files.walk(rulesDir)
+                .filter(Files::isRegularFile)
+                .filter(p -> p.toString().endsWith(".dslr"))
+                .sorted()
+                .collect(Collectors.toList());
+
+        DefaultExpander expander = new DefaultExpander();
+        for (var m : mappings) expander.addDSLMapping(m.getMapping());
+
+        for (Path dslr : dslrFiles) {
+            String dslrText = Files.readString(dslr, StandardCharsets.UTF_8);
+            String drlBody = expander.expand(dslrText);
+            String drl = mergeHeader(ensureSingleTopPackage(drlBody, pkg),
+                    header != null ? ensureSingleTopPackage(header, pkg) : null);
+            // give a deterministic in-memory path
+            String kfsPath = "src/main/resources/rules/_expanded_" + dslr.getFileName().toString().replace(".dslr", ".drl");
+            expandedDrls.put(kfsPath, drl);
         }
 
-        KieBuilder kieBuilder = kieServices.newKieBuilder(kfs).buildAll();
-        if (kieBuilder.getResults().hasMessages(Message.Level.ERROR)) {
-            throw new RuntimeException("Build Errors:\n" + kieBuilder.getResults());
+        // 4) Include any static .drl files you keep in the folder (besides _header.drl)
+        List<Path> staticDrls = Files.walk(rulesDir)
+                .filter(Files::isRegularFile)
+                .filter(p -> p.toString().endsWith(".drl"))
+                .filter(p -> !p.getFileName().toString().equals("_header.drl"))
+                .sorted()
+                .collect(Collectors.toList());
+        for (Path drl : staticDrls) {
+            String text = Files.readString(drl, StandardCharsets.UTF_8);
+            String normalized = ensureSingleTopPackage(text, pkg);
+            String kfsPath = "src/main/resources/rules/" + drl.getFileName();
+            expandedDrls.put(kfsPath, normalized);
         }
 
-        this.kieContainer = kieServices.newKieContainer(kieServices.getRepository().getDefaultReleaseId());
+        // 5) Build with a fresh ReleaseId (prevents stale cache)
+        KieServices ks = KieServices.Factory.get();
+        String version = "1.0." + System.currentTimeMillis();
+        ReleaseId rid = ks.newReleaseId("com.example", "hotrules", version);
+        KieFileSystem kfs = ks.newKieFileSystem().generateAndWritePomXML(rid);
+
+        // write all DRLs
+        for (var e : expandedDrls.entrySet()) {
+            kfs.write(ks.getResources()
+                    .newByteArrayResource(e.getValue().getBytes(StandardCharsets.UTF_8))
+                    .setTargetPath(e.getKey()));
+        }
+
+        KieBuilder kb = ks.newKieBuilder(kfs).buildAll();
+        Results results = kb.getResults();
+        if (results.hasMessages(Message.Level.ERROR)) {
+            System.err.println("❌ Build errors:");
+            results.getMessages(Message.Level.ERROR).forEach(msg -> System.err.println(" - " + msg));
+            throw new RuntimeException("Rule build failed");
+        }
+
+        // 6) Swap container atomically
+        KieContainer newContainer = ks.newKieContainer(rid);
+        KieContainer old = containerRef.getAndSet(newContainer);
+        if (old != null) old.dispose();
+        System.out.println("✅ Rules compiled: " + rid);
     }
 
-    public void fireAllRules() {
-        KieSession kieSession = kieContainer.newKieSession();
-        kieSession.insert(new Customer(42)); // Optional test insert
-        kieSession.fireAllRules();
-        kieSession.dispose();
-    }
-
-    public void execute() {
-        KieSession kieSession = kieContainer.newKieSession();
-        Customer customer = new Customer(42);
-        kieSession.insert(customer);
-        kieSession.fireAllRules();
-        kieSession.dispose();
-    }
-
+    // ---------- Watcher (reuse your existing WatcherService if you prefer) ----------
     public void watchForChanges() {
         Thread watcher = new Thread(new WatcherService(this));
         watcher.setDaemon(true);
         watcher.start();
+    }
+
+    // ---------- Helpers ----------
+    private DSLTokenizedMappingFile loadDslMapping(Path dslPath) {
+        try (var reader = Files.newBufferedReader(dslPath, StandardCharsets.UTF_8)) {
+            DSLTokenizedMappingFile f = new DSLTokenizedMappingFile();
+            f.parseAndLoad(reader);
+            return f;
+        } catch (Exception e) {
+            System.err.println("Failed to load DSL: " + dslPath + " -> " + e.getMessage());
+            return null;
+        }
+    }
+
+    private static String readIfExists(Path p) {
+        try { return Files.exists(p) ? Files.readString(p, StandardCharsets.UTF_8) : null; }
+        catch (Exception e) { return null; }
+    }
+
+    private static final Pattern PKG = Pattern.compile("(?m)^\\s*package\\s+([\\w\\.]+)\\s*$");
+
+    private static String extractPackage(String drl) {
+        var m = PKG.matcher(drl);
+        return m.find() ? m.group(1) : "rules";
+    }
+
+    /** Ensure exactly one `package X` at the very top, no semicolon, blank line after. */
+    private static String ensureSingleTopPackage(String drl, String pkg) {
+        String s = stripBom(drl).stripLeading();
+        // remove all package lines
+        s = s.replaceAll("(?m)^\\s*package\\s+[^\\r\\n]+\\s*$", "").stripLeading();
+        return "package " + pkg + "\n\n" + s;
+    }
+
+    /** If header provided, put header first; otherwise return body as-is. */
+    private static String mergeHeader(String bodyWithPkg, String headerWithPkgOrNull) {
+        if (headerWithPkgOrNull == null) return bodyWithPkg;
+        // remove the package line from body so header's package stays first
+        String body = bodyWithPkg.replaceFirst("(?s)^\\s*package\\s+[^\\r\\n]+\\s*", "").stripLeading();
+        return headerWithPkgOrNull.stripTrailing() + "\n\n" + body;
+    }
+
+    private static String stripBom(String s) {
+        return (s != null && !s.isEmpty() && s.charAt(0) == '\uFEFF') ? s.substring(1) : s;
     }
 }
