@@ -10,23 +10,39 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import static java.nio.file.StandardWatchEventKinds.*;
 
+
+import uk.g.h.rules.runtime.DroolsService;
+import uk.g.h.rules.toggle.JsonBackedRuleToggleService;
+
+import java.io.IOException;
+import java.nio.file.*;
+import java.time.Instant;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
+
+import static java.nio.file.StandardWatchEventKinds.*;
+
 public final class UnifiedWatcherService implements Runnable {
     private final Path rulesDir;
     private final Path togglesFile;
-    private final Runnable onRulesChanged;
+    private final DroolsService droolsService;
     private final JsonBackedRuleToggleService toggleService;
+    private final Supplier<Object[]> factsSupplier;
 
     private final ConcurrentHashMap<Path, Long> lastEvent = new ConcurrentHashMap<>();
     private static final Set<String> RULE_EXTS = Set.of(".drl", ".dsl", ".dslr");
 
     public UnifiedWatcherService(Path rulesDir,
                                  Path togglesFile,
-                                 Runnable onRulesChanged,
-                                 JsonBackedRuleToggleService toggleService) {
+                                 DroolsService droolsService,
+                                 JsonBackedRuleToggleService toggleService,
+                                 Supplier<Object[]> factsSupplier) {
         this.rulesDir = rulesDir;
-               this.togglesFile = togglesFile;
-        this.onRulesChanged = onRulesChanged;
+        this.togglesFile = togglesFile;
+        this.droolsService = droolsService;
         this.toggleService = toggleService;
+        this.factsSupplier = factsSupplier;
     }
 
     @Override
@@ -49,7 +65,6 @@ public final class UnifiedWatcherService implements Runnable {
                     Path ctx = (Path) evt.context();
                     Path dir = (Path) key.watchable();
                     Path changed = dir.resolve(ctx);
-
                     if (!debounced(changed)) continue;
 
                     if (isRuleFile(changed)) {
@@ -63,8 +78,9 @@ public final class UnifiedWatcherService implements Runnable {
                     sleep(150);
                     try {
                         System.out.println("Rules changed -> rebuilding KieContainer...");
-                        onRulesChanged.run();
-                        System.out.println("Rules reloaded successfully.");
+                        droolsService.rebuildFromFilesystem(rulesDir);
+                        System.out.println("Rules reloaded. Re-firing...");
+                        refire();
                     } catch (Throwable t) {
                         System.err.println("Rule reload failed: " + t.getMessage());
                         t.printStackTrace(System.err);
@@ -81,6 +97,8 @@ public final class UnifiedWatcherService implements Runnable {
                             toggleService.putAll(java.util.Map.of());
                             System.out.println("Toggle file missing; default enable policy in effect.");
                         }
+                        System.out.println("Toggles changed. Re-firing...");
+                        refire();
                     } catch (IOException e) {
                         System.err.println("Failed to reload toggles: " + e.getMessage());
                     }
@@ -93,6 +111,18 @@ public final class UnifiedWatcherService implements Runnable {
             System.out.println("Watcher interrupted, exiting.");
         } catch (IOException e) {
             throw new RuntimeException("Watcher failed", e);
+        }
+    }
+
+    private void refire() {
+        try {
+            Object[] facts = factsSupplier != null ? factsSupplier.get() : new Object[0];
+            if (facts == null) facts = new Object[0];
+            int fired = droolsService.fireOnce(facts);
+            System.out.println("Re-fired rules; fired count = " + fired);
+        } catch (Throwable t) {
+            System.err.println("Re-fire failed: " + t.getMessage());
+            t.printStackTrace(System.err);
         }
     }
 
