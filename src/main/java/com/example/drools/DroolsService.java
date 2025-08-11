@@ -57,19 +57,36 @@ public class DroolsService {
         }
     }
 
-    /** Example: run rules with a new session. Keep your own insert logic as needed. */
     public void fireAllRules() {
-        KieContainer kc = containerRef.get();
-        if (kc == null) throw new IllegalStateException("KieContainer not initialised");
-        KieSession ks = kc.newKieSession();
+        KieSession ks = kieContainer.newKieSession();
         try {
-            // insert your domain facts here
-            // ks.insert(new Customer(42));
+            System.out.println("fireAllRules() session=" + System.identityHashCode(ks));
+
+            // Log activations and matches
+            ks.addEventListener(new org.kie.api.event.rule.DefaultAgendaEventListener() {
+                @Override
+                public void afterMatchFired(org.kie.api.event.rule.AfterMatchFiredEvent e) {
+                    System.out.println("FIRED: " + e.getMatch().getRule().getName());
+                }
+                @Override
+                public void matchCreated(org.kie.api.event.rule.MatchCreatedEvent e) {
+                    System.out.println("MATCH: " + e.getMatch().getRule().getName());
+                }
+            });
+
+            // Insert exactly one fact
+            Customer c = new Customer(42);
+            ks.insert(c);
+            System.out.println("Inserted facts: " + ks.getObjects().size());
+
+            // Fire rules
             ks.fireAllRules();
         } finally {
-            ks.dispose();
+            ks.dispose(); // clean up session
         }
     }
+
+
 
     /** === The important bit: compile ALL rules from DSL/DSLR → DRL, then build === */
     private void compileAllDslRules() throws Exception {
