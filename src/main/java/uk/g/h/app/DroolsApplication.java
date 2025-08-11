@@ -23,52 +23,58 @@ import java.nio.file.Path;
 import java.nio.file.Files;
 import java.util.function.Supplier;
 
+package uk.g.h.app;
+
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import uk.g.h.rules.runtime.DroolsService;
+import uk.g.h.rules.runtime.CurrentFacts;
+import uk.g.h.rules.watch.UnifiedWatcherService;
+import uk.g.h.rules.toggle.JsonBackedRuleToggleService;
+
+import java.nio.file.Path;
+
 @SpringBootApplication
 public class DroolsApplication implements CommandLineRunner {
 
+    private final DroolsService drools;                 // injected
+    private final JsonBackedRuleToggleService toggles;  // injected
+    private final CurrentFacts facts;                   // injected
+    private final String rulesDir;                      // injected
+    private final String togglesFile;                   // injected
+
+    public DroolsApplication(
+            DroolsService drools,
+            JsonBackedRuleToggleService toggles,
+            CurrentFacts facts,
+            @org.springframework.beans.factory.annotation.Value("${rules.dir:src/main/resources/rules}") String rulesDir,
+            @org.springframework.beans.factory.annotation.Value("${toggles.file:config/toggles.json}") String togglesFile
+    ) {
+        this.drools = drools;
+        this.toggles = toggles;
+        this.facts = facts;
+        this.rulesDir = rulesDir;
+        this.togglesFile = togglesFile;
+    }
+
     @Override
     public void run(String... args) throws Exception {
-        Path rulesDir = Path.of("src/main/resources/rules");
-        Path toggles  = Path.of("config/toggles.json");
-
-        if (!Files.exists(rulesDir)) {
-            throw new IllegalStateException("Rules dir not found: " + rulesDir.toAbsolutePath());
-        }
-
-        // Build initial container PROGRAMMATICALLY (we removed kmodule.xml)
-        KieContainer initial = uk.g.h.rules.runtime.DroolsService.buildFromRulesDir(rulesDir);
-
-        // Load toggles
-        var toggleService = new JsonBackedRuleToggleService(true);
-        if (Files.exists(toggles)) {
-            toggleService.loadFromJson(toggles);
-        }
-
-        // Construct service manually (non-annotated)
-        var drools = new DroolsService(initial, toggleService);
-
-        // Supply the facts to (re)fire with after ANY change.
-        // Replace this supplier with how you actually gather current facts.
-        Supplier<Object[]> factsSupplier = () -> new Object[] {
-                // e.g., fetch from DB/cache, or hold an AtomicReference<Object[]> updated elsewhere
-                // new Order("A123", 180.0), new Customer("C42", "Bronze")
-        };
-
-        // Start watcher: rebuild on DRL/DSL/DSLR change, reload toggles on JSON change, and AUTO RE-FIRE
+        // start watcher (auto rebuild + refire with latest facts)
         var watcher = new UnifiedWatcherService(
-                rulesDir,
-                toggles,
+                Path.of(rulesDir),
+                Path.of(togglesFile),
                 drools,
-                toggleService,
-                factsSupplier
+                toggles,
+                facts::get
         );
         Thread t = new Thread(watcher, "rules+toggle-watcher");
         t.setDaemon(true);
         t.start();
 
-        // Initial fire
-        int fired = drools.fireOnce(factsSupplier.get());
-        System.out.println("Initial fireAllRules() fired = " + fired);
+        // initial fire if you want
+        int fired = drools.fireOnce(facts.get());
+        System.out.println("Initial fired = " + fired);
     }
 
     public static void main(String[] args) {
