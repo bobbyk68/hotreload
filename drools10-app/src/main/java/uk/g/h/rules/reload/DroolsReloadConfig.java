@@ -82,3 +82,30 @@ public class DroolsReloadConfig {
         return new RepoScanScheduler(scanner, roller, ks);
     }
 }
+
+// imports
+import java.net.URI;
+import java.nio.file.Paths;
+import org.kie.api.KieServices;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+
+@Value("${rules.scanner.mode:local-m2}")
+private String scannerMode;
+
+@Value("${rules.local.m2:}")
+private String localM2;
+
+@Value("${rules.remote.metadata-uri:}")
+private String metadataUri;   // keep optional for local mode
+
+@Bean
+public RulesScanner scanner(KieServices ks) throws Exception {
+    String[] p = gav.split(":"); // g:a:v
+    if ("local-m2".equalsIgnoreCase(scannerMode)) {
+        var m2 = (localM2 == null || localM2.isBlank()) ? null : Paths.get(localM2);
+        return new LocalMavenScanner(ks, p[0], p[1], p[2], m2);
+    } else {
+        return new RemoteMavenScanner(ks, p[0], p[1], p[2], new URI(metadataUri), repoUser, repoPass);
+    }
+}

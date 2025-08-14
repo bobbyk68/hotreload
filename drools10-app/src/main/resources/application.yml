@@ -12,8 +12,18 @@ rules:
     pass: "${NEXUS_PASS:}"
 
 
-  <dependencies>
-  <dependency><groupId>org.kie</groupId><artifactId>kie-api</artifactId></dependency>
-  <dependency><groupId>org.drools</groupId><artifactId>drools-core</artifactId></dependency>
-  <dependency><groupId>org.kie</groupId><artifactId>kie-ci</artifactId></dependency>
-  </dependencies>
+# drools-app/src/main/resources/application.yml
+rules:
+  gav: "uk.g.h:rules-kjar:1.0.0-SNAPSHOT"  # <-- your real G:A:V
+  scan:
+    period-ms: 5000                        # poll every 5s for the demo
+  scanner:
+    mode: local-m2                         # <- use LocalMavenScanner (no HTTP)
+  local:
+    m2: ""                                 # blank = use ~/.m2/repository (or set absolute path)
+  session:
+    pool-size: 8
+
+logging:
+  level:
+    uk.g.h.rules.reload: DEBUG             # optional: see what the scanner is doing
