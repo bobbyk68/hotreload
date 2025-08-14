@@ -1,0 +1,19 @@
+
+rules:
+  gav: "uk.g.h:rules-kjar:1.0.0-SNAPSHOT"
+  remote:
+    metadata-uri: "https://nexus.example.com/repository/maven-snapshots/uk/g/h/rules-kjar/1.0.0-SNAPSHOT/maven-metadata.xml"
+  scan:
+    period-ms: 10000
+  session:
+    pool-size: 16
+  repo:
+    user: "${NEXUS_USER:}"
+    pass: "${NEXUS_PASS:}"
+
+
+  <dependencies>
+  <dependency><groupId>org.kie</groupId><artifactId>kie-api</artifactId></dependency>
+  <dependency><groupId>org.drools</groupId><artifactId>drools-core</artifactId></dependency>
+  <dependency><groupId>org.kie</groupId><artifactId>kie-ci</artifactId></dependency>
+  </dependencies>
